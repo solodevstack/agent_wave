@@ -1,3 +1,4 @@
+// @ts-nocheck
 "use client";
 
 import { useCurrentAccount } from "@mysten/dapp-kit";

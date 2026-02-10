@@ -41,6 +41,7 @@ public struct HiredAgent has store, copy, drop {
     job: String,
     price: u64,
     paid: bool,
+    work_done: bool,
     timestamp: u64,
 }
 
@@ -60,7 +61,7 @@ public struct AgenticEscrow has key, store {
     main_agent_price: u64,
     main_agent_paid: bool,
     hired_agents: vector<HiredAgent>,
-    allowlist_id: Option<ID>,
+    blob_id: Option<ID>,
     created_at: u64,
 }
 
@@ -87,7 +88,7 @@ public struct AgenticEscrowInfo has drop, store {
     main_agent_price: u64,
     main_agent_paid: bool,
     total_hired_agents: u64,
-    allowlist_id: Option<ID>,
+    blob_id: Option<ID>,
     created_at: u64,
 }
 
@@ -153,6 +154,13 @@ public struct MainAgentRefunded has copy, drop {
     escrow_id: ID,
     main_agent: address,
     amount: u64,
+    timestamp: u64,
+}
+
+public struct SubAgentWorkDoneToggled has copy, drop {
+    escrow_id: ID,
+    agent_address: address,
+    work_done: bool,
     timestamp: u64,
 }
 
@@ -223,7 +231,7 @@ public fun create_agentic_escrow(
         main_agent_price,
         main_agent_paid: false,
         hired_agents: vector::empty(),
-        allowlist_id: option::none(),
+        blob_id: option::none(),
         created_at: timestamp,
     };
 
@@ -316,6 +324,7 @@ public fun hire_sub_agent(
         job,
         price,
         paid: false,
+        work_done: false,
         timestamp,
     };
 
@@ -359,6 +368,48 @@ public fun complete_job(
     assert!(escrow.status == STATUS_IN_PROGRESS, EInvalidState);
 
     escrow.status = STATUS_COMPLETED;
+}
+
+/// Hired sub-agent toggles their work as done
+public fun toggle_work_done(
+    escrow_id: ID,
+    escrow_table: &mut AgenticEscrowTable,
+    clock: &sui::clock::Clock,
+    ctx: &mut TxContext
+) {
+    let sender = ctx.sender();
+    let escrow = table::borrow_mut(&mut escrow_table.escrows, escrow_id);
+
+    // Job must be accepted or in progress
+    assert!(
+        escrow.status == STATUS_ACCEPTED || escrow.status == STATUS_IN_PROGRESS || escrow.status == STATUS_COMPLETED,
+        EInvalidState
+    );
+
+    // Find the hired agent and toggle work_done
+    let mut i = 0;
+    let mut found = false;
+    while (i < vector::length(&escrow.hired_agents)) {
+        let agent = vector::borrow_mut(&mut escrow.hired_agents, i);
+        if (agent.agent_address == sender) {
+            agent.work_done = !agent.work_done;
+            found = true;
+
+            let timestamp = sui::clock::timestamp_ms(clock);
+
+            event::emit(SubAgentWorkDoneToggled {
+                escrow_id: object::uid_to_inner(&escrow.id),
+                agent_address: sender,
+                work_done: agent.work_done,
+                timestamp,
+            });
+
+            break
+        };
+        i = i + 1;
+    };
+
+    assert!(found, EAgentNotFound);
 }
 
 /// Main agent pays a hired sub-agent
@@ -689,20 +740,20 @@ public fun refund_main_agent(
     });
 }
 
-/// Add allowlist ID
-public fun add_allowlist_id(
+/// Add blob ID
+public fun add_blob_id(
     escrow_id: ID,
     escrow_table: &mut AgenticEscrowTable,
-    allowlist_id: ID,
+    blob_id: ID,
     ctx: &mut TxContext
 ) {
     let sender = ctx.sender();
     let escrow = table::borrow_mut(&mut escrow_table.escrows, escrow_id);
 
-    // Only main agent can add allowlist
+    // Only main agent can add blob ID
     assert!(sender == escrow.main_agent, ENotAuthorized);
 
-    escrow.allowlist_id = option::some(allowlist_id);
+    escrow.blob_id = option::some(blob_id);
 }
 
 // ===== View Functions =====
@@ -734,7 +785,7 @@ public fun get_all_escrows(escrow_table: &AgenticEscrowTable): vector<AgenticEsc
                 main_agent_price: escrow.main_agent_price,
                 main_agent_paid: escrow.main_agent_paid,
                 total_hired_agents: vector::length(&escrow.hired_agents),
-                allowlist_id: escrow.allowlist_id,
+                blob_id: escrow.blob_id,
                 created_at: escrow.created_at,
             };
 
@@ -778,7 +829,7 @@ public fun get_escrows_as_main_agent(
                     main_agent_price: escrow.main_agent_price,
                     main_agent_paid: escrow.main_agent_paid,
                     total_hired_agents: vector::length(&escrow.hired_agents),
-                    allowlist_id: escrow.allowlist_id,
+                    blob_id: escrow.blob_id,
                     created_at: escrow.created_at,
                 };
 
@@ -835,7 +886,7 @@ public fun get_escrows_as_sub_agent(
                     main_agent_price: escrow.main_agent_price,
                     main_agent_paid: escrow.main_agent_paid,
                     total_hired_agents: vector::length(&escrow.hired_agents),
-                    allowlist_id: escrow.allowlist_id,
+                    blob_id: escrow.blob_id,
                     created_at: escrow.created_at,
                 };
 
@@ -880,7 +931,7 @@ public fun get_escrows_as_client(
                     main_agent_price: escrow.main_agent_price,
                     main_agent_paid: escrow.main_agent_paid,
                     total_hired_agents: vector::length(&escrow.hired_agents),
-                    allowlist_id: escrow.allowlist_id,
+                    blob_id: escrow.blob_id,
                     created_at: escrow.created_at,
                 };
 
@@ -922,7 +973,7 @@ public fun get_all_pending_escrows(escrow_table: &AgenticEscrowTable): vector<Ag
                     main_agent_price: escrow.main_agent_price,
                     main_agent_paid: escrow.main_agent_paid,
                     total_hired_agents: vector::length(&escrow.hired_agents),
-                    allowlist_id: escrow.allowlist_id,
+                    blob_id: escrow.blob_id,
                     created_at: escrow.created_at,
                 };
 
@@ -964,7 +1015,7 @@ public fun get_all_disputed_escrows(escrow_table: &AgenticEscrowTable): vector<A
                     main_agent_price: escrow.main_agent_price,
                     main_agent_paid: escrow.main_agent_paid,
                     total_hired_agents: vector::length(&escrow.hired_agents),
-                    allowlist_id: escrow.allowlist_id,
+                    blob_id: escrow.blob_id,
                     created_at: escrow.created_at,
                 };
 
@@ -1000,7 +1051,7 @@ public fun get_escrow_by_id(
         main_agent_price: escrow.main_agent_price,
         main_agent_paid: escrow.main_agent_paid,
         total_hired_agents: vector::length(&escrow.hired_agents),
-        allowlist_id: escrow.allowlist_id,
+        blob_id: escrow.blob_id,
         created_at: escrow.created_at,
     }
 }
@@ -1014,22 +1065,22 @@ public fun get_hired_agents(
     escrow.hired_agents
 }
 
-/// Get allowlist ID
-public fun get_allowlist(
+/// Get blob ID
+public fun get_blob_id(
     escrow_id: ID,
     escrow_table: &AgenticEscrowTable
 ): Option<ID> {
     let escrow = table::borrow(&escrow_table.escrows, escrow_id);
-    escrow.allowlist_id
+    escrow.blob_id
 }
 
-/// Check if allowlist exists
-public fun check_allowlist_is_some(
+/// Check if blob ID exists
+public fun check_blob_id_is_some(
     escrow_id: ID,
     escrow_table: &AgenticEscrowTable
 ): bool {
     let escrow = table::borrow(&escrow_table.escrows, escrow_id);
-    option::is_some(&escrow.allowlist_id)
+    option::is_some(&escrow.blob_id)
 }
 
 /// Get status

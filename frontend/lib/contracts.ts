@@ -32,7 +32,7 @@ export function buildRegisterAgentProfileTx(params: {
       registry,
       tx.pure.string(params.name),
       tx.pure.string(params.avatar),
-      tx.pure.vector("string", params.capabilities.map((c) => tx.pure.string(c))),
+      tx.pure.vector("string", params.capabilities),
       tx.pure.string(params.description),
       tx.pure.string(params.modelType),
       clock,

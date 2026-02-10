@@ -1,463 +1,439 @@
 "use client";
 
 import * as React from "react";
-import {
-  ConnectButton,
-  useCurrentAccount,
-  useSignAndExecuteTransaction,
-  useSuiClient,
-} from "@mysten/dapp-kit";
-import { toast } from "sonner";
-
-import { buildCreateAgenticEscrowTx } from "@/lib/contracts";
+import { useSuiClient } from "@mysten/dapp-kit";
+import { useRouter } from "next/navigation";
+import { Transaction } from "@mysten/sui/transactions";
 import { networkConfig } from "@/config/network.config";
+import {
+  Search,
+  Bot,
+  ArrowRight,
+  RefreshCw,
+  Zap,
+  Shield,
+  Users,
+  Star,
+  CheckCircle2,
+  Cpu,
+  Eye,
+} from "lucide-react";
 
-type AgentProfileCreatedEvent = {
-  name?: string;
-  owner?: string;
-  timestamp?: string | number;
-};
-
-type AgentListItem = {
+export type AgentProfile = {
   owner: string;
+  avatar: string;
   name: string;
-  timestamp?: number;
+  capabilities: string[];
+  description: string;
+  rating: number;
+  totalReviews: number;
+  completedTasks: number;
+  createdAt: number;
+  modelType: string;
+  isActive: boolean;
 };
 
-function mistToSui(mist: bigint) {
-  return Number(mist) / 1_000_000_000;
+function generateAvatarUrl(seed: string) {
+  return `https://api.dicebear.com/9.x/bottts-neutral/svg?seed=${encodeURIComponent(seed)}&backgroundColor=1e1b4b,312e81,3730a3&backgroundType=gradientLinear`;
 }
 
-function parseMist(input: string): bigint {
-  // Accept either a plain integer mist value, or a decimal SUI amount.
-  const trimmed = input.trim();
-  if (!trimmed) return 0n;
-
-  if (/^\d+$/.test(trimmed)) {
-    // treat as mist
-    return BigInt(trimmed);
-  }
-
-  // treat as SUI decimal
-  const [whole, frac = ""] = trimmed.split(".");
-  const fracPadded = (frac + "000000000").slice(0, 9);
-  const w = whole ? BigInt(whole) : 0n;
-  const f = BigInt(fracPadded || "0");
-  return w * 1_000_000_000n + f;
-}
 
 export default function HomePage() {
   const cfg = networkConfig.testnet.variables;
-  const account = useCurrentAccount();
   const suiClient = useSuiClient();
-  const { mutateAsync: signAndExecute, isPending } =
-    useSignAndExecuteTransaction();
+  const router = useRouter();
 
-  const [agents, setAgents] = React.useState<AgentListItem[]>([]);
-  const [loadingAgents, setLoadingAgents] = React.useState(false);
-  const [agentsError, setAgentsError] = React.useState<string | null>(null);
-
-  const [selectedAgent, setSelectedAgent] = React.useState<AgentListItem | null>(
-    null
-  );
-
-  // Escrow form
-  const [jobTitle, setJobTitle] = React.useState("");
-  const [jobDescription, setJobDescription] = React.useState("");
-  const [jobCategory, setJobCategory] = React.useState("");
-  const [duration, setDuration] = React.useState(7); // u8
-  const [budgetInput, setBudgetInput] = React.useState("0.1"); // SUI by default
-  const [mainAgentPriceInput, setMainAgentPriceInput] = React.useState("0.05");
-
-  const [lastDigest, setLastDigest] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-
-  const profileCreatedEventType = `${cfg.packageId}::agentwave_profile::AgentProfileCreated`;
+  const [agents, setAgents] = React.useState<AgentProfile[]>([]);
+  const [loadingAgents, setLoadingAgents] = React.useState(true);
+  const [searchQuery, setSearchQuery] = React.useState("");
 
   const refreshAgents = React.useCallback(async () => {
     setLoadingAgents(true);
-    setAgentsError(null);
-
     try {
+      // First try devInspect to get full profile data
+      const tx = new Transaction();
+      const registry = tx.sharedObjectRef({
+        objectId: cfg.agentRegistryId,
+        initialSharedVersion: cfg.agentRegistryInitialSharedVersion,
+        mutable: false,
+      });
+      tx.moveCall({
+        package: cfg.packageId,
+        module: "agentwave_profile",
+        function: "get_all_agent_profiles",
+        arguments: [registry],
+      });
+
+      const inspectResult = await suiClient.devInspectTransactionBlock({
+        transactionBlock: tx,
+        sender: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      });
+
+      if (inspectResult.results?.[0]?.returnValues) {
+        const raw = inspectResult.results[0].returnValues[0];
+        if (raw && Array.isArray(raw) && raw[0]) {
+          // raw[0] is the BCS bytes as number array
+          const bytes = new Uint8Array(raw[0] as number[]);
+          const profiles = decodeBcsProfiles(bytes);
+          if (profiles.length > 0) {
+            setAgents(profiles);
+            setLoadingAgents(false);
+            return;
+          }
+        }
+      }
+
+      // Fallback: use events
+      const profileCreatedEventType = `${cfg.packageId}::agentwave_profile::AgentProfileCreated`;
       const res = await suiClient.queryEvents({
         query: { MoveEventType: profileCreatedEventType },
         limit: 50,
         order: "descending",
       });
 
-      const items: AgentListItem[] = [];
+      const items: AgentProfile[] = [];
       const seen = new Set<string>();
 
       for (const ev of res.data) {
-        // Most fullnodes return parsedJson for Move events.
-        const pj = (ev as unknown as { parsedJson?: AgentProfileCreatedEvent })
+        const pj = (ev as unknown as { parsedJson?: { name?: string; owner?: string; timestamp?: string | number } })
           .parsedJson;
         const owner = pj?.owner;
         const name = pj?.name;
-        const tsRaw = pj?.timestamp;
-
         if (!owner) continue;
         if (seen.has(owner)) continue;
         seen.add(owner);
 
         items.push({
           owner,
-          name: name || owner.slice(0, 10) + "…",
-          timestamp:
-            typeof tsRaw === "string" ? Number(tsRaw) : typeof tsRaw === "number" ? tsRaw :
-            undefined,
+          name: name || owner.slice(0, 10) + "...",
+          avatar: "",
+          capabilities: [],
+          description: "",
+          rating: 0,
+          totalReviews: 0,
+          completedTasks: 0,
+          createdAt: 0,
+          modelType: "",
+          isActive: true,
         });
       }
 
       setAgents(items);
     } catch (e) {
-      setAgentsError(e instanceof Error ? e.message : String(e));
+      console.error("Failed to load agents:", e);
     } finally {
       setLoadingAgents(false);
     }
-  }, [profileCreatedEventType, suiClient]);
+  }, [cfg, suiClient]);
 
   React.useEffect(() => {
     void refreshAgents();
   }, [refreshAgents]);
 
-  async function onCreateEscrow() {
-    setError(null);
-    setLastDigest(null);
-
-    if (!account?.address) {
-      setError("Connect a wallet first (zkLogin via Enoki wallet).");
-      return;
-    }
-
-    if (!selectedAgent) {
-      setError("Select an agent first.");
-      return;
-    }
-
-    const budgetMist = parseMist(budgetInput);
-    const mainAgentPriceMist = parseMist(mainAgentPriceInput);
-
-    if (budgetMist <= 0n) {
-      setError("Budget must be > 0.");
-      return;
-    }
-
-    if (mainAgentPriceMist <= 0n) {
-      setError("Main agent price must be > 0.");
-      return;
-    }
-
-    const tx = buildCreateAgenticEscrowTx({
-      mainAgent: selectedAgent.owner,
-      jobTitle: jobTitle || "Untitled job",
-      jobDescription: jobDescription || "",
-      jobCategory: jobCategory || "general",
-      duration,
-      budgetMist,
-      mainAgentPriceMist,
-    });
-
-    try {
-      const res = await signAndExecute({
-        transaction: tx,
-      });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const digest = (res as any)?.digest || (res as any)?.effects?.transactionDigest;
-      setLastDigest(digest ?? "(no digest returned)");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  const shortAddress = account?.address
-    ? `${account.address.slice(0, 6)}…${account.address.slice(-4)}`
-    : null;
-
-  async function copyAddress() {
-    if (!account?.address) return;
-
-    const text = account.address;
-
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        // Fallback for older browsers / restricted contexts
-        const el = document.createElement("textarea");
-        el.value = text;
-        el.setAttribute("readonly", "");
-        el.style.position = "fixed";
-        el.style.left = "-9999px";
-        document.body.appendChild(el);
-        el.select();
-        document.execCommand("copy");
-        document.body.removeChild(el);
-      }
-      toast.success("Address copied");
-    } catch (e) {
-      toast.error(
-        `Copy failed${e instanceof Error && e.message ? `: ${e.message}` : ""}`
-      );
-    }
-  }
+  const filteredAgents = agents.filter(
+    (a) =>
+      a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      a.owner.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      a.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      a.capabilities.some((c) => c.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
 
   return (
-    <div className="container">
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <div>
-          <h1 style={{ margin: 0 }}>AgentWave</h1>
-          <small>
-            Deployed on Sui testnet • package <code>{cfg.packageId}</code>
-          </small>
+    <div className="mx-auto max-w-6xl px-6">
+      {/* Hero Section */}
+      <section className="pb-16 pt-12 text-center">
+        <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-(--border-subtle) bg-(--bg-card) px-4 py-2 text-sm text-(--text-secondary)">
+          <Zap className="h-4 w-4 text-(--accent-light)" />
+          Powered by Sui Network
         </div>
-        <ConnectButton />
-      </div>
 
-      <div style={{ height: 18 }} />
+        <h1 className="mb-4 text-5xl font-extrabold tracking-tight md:text-6xl">
+          Hire AI Agents,{" "}
+          <span className="gradient-text">Trustlessly</span>
+        </h1>
 
-      <div className="card">
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>Wallet</div>
-        {account?.address ? (
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <div style={{ minWidth: 0 }}>
-              <small style={{ display: "block" }}>Connected address</small>
-              <div
-                style={{
-                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                  wordBreak: "break-all",
-                }}
-                aria-label={`Wallet address ${account.address}`}
-                title={account.address}
-              >
-                <button
-                  onClick={copyAddress}
-                  aria-label="Copy wallet address"
-                  title="Copy address"
-                  type="button"
-                  style={{
-                    all: "unset",
-                    cursor: "pointer",
-                    display: "inline",
-                  }}
-                >
-                  {shortAddress}
-                </button>
-              </div>
-              <small style={{ opacity: 0.7 }}>Click the address or Copy</small>
-            </div>
-            <button
-              className="secondary"
-              onClick={copyAddress}
-              aria-label="Copy wallet address"
-              title="Copy address"
-              type="button"
-            >
-              Copy
-            </button>
+        <p className="mx-auto mb-10 max-w-2xl text-lg text-(--text-secondary)">
+          Browse the decentralized marketplace of AI agents. Select an agent,
+          create a job, and let smart contracts handle the escrow.
+        </p>
+
+        <div className="mx-auto flex max-w-xl items-center gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-4 top-1/2 h-4.5 w-4.5 -translate-y-1/2 text-(--text-muted)" />
+            <input
+              type="text"
+              placeholder="Search agents by name, capability, or address..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="input-field pl-11"
+            />
           </div>
-        ) : (
-          <small style={{ opacity: 0.85 }}>Not connected</small>
-        )}
-      </div>
-
-      <div style={{ height: 18 }} />
-
-      <div className="card">
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>Marketplace</div>
-        <small style={{ opacity: 0.85 }}>
-          Pick an agent profile, then create an escrow by calling
-          <code> agentwave_contract::create_agentic_escrow</code>.
-        </small>
-
-        <div style={{ height: 12 }} />
-
-        <div className="row">
-          <button className="secondary" onClick={() => void refreshAgents()}>
-            {loadingAgents ? "Refreshing…" : "Refresh agents"}
+          <button
+            onClick={() => void refreshAgents()}
+            disabled={loadingAgents}
+            className="glow-btn flex items-center gap-2 whitespace-nowrap"
+          >
+            <RefreshCw
+              className={`h-4 w-4 ${loadingAgents ? "animate-spin" : ""}`}
+            />
+            Refresh
           </button>
-          <small style={{ opacity: 0.75 }}>
-            Loaded {agents.length} agents (from on-chain AgentProfileCreated
-            events)
-          </small>
         </div>
+      </section>
 
-        {agentsError ? (
-          <div style={{ marginTop: 10, color: "#fca5a5" }}>
-            <b>Error loading agents:</b> {agentsError}
+      {/* Stats Row */}
+      <section className="mb-12 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        {[
+          { icon: Users, label: "Active Agents", value: agents.filter((a) => a.isActive).length.toString() },
+          { icon: Shield, label: "Escrow Protected", value: "100%" },
+          { icon: Zap, label: "Platform Fee", value: "5%" },
+        ].map((stat) => (
+          <div key={stat.label} className="glass-card flex items-center gap-4 p-5">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-(--accent-glow)">
+              <stat.icon className="h-5 w-5 text-(--accent-light)" />
+            </div>
+            <div>
+              <div className="text-2xl font-bold">{stat.value}</div>
+              <div className="text-sm text-(--text-muted)">{stat.label}</div>
+            </div>
           </div>
-        ) : null}
+        ))}
+      </section>
+
+      {/* Section Header */}
+      <div className="mb-6 flex items-center justify-between">
+        <h2 className="text-2xl font-bold">Available Agents</h2>
+        <span className="text-sm text-(--text-muted)">
+          {filteredAgents.length} agent{filteredAgents.length !== 1 ? "s" : ""} found
+        </span>
       </div>
 
-      <div style={{ height: 18 }} />
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-          gap: 12,
-        }}
-      >
-        {agents.map((a) => {
-          const selected = selectedAgent?.owner === a.owner;
-          return (
-            <div key={a.owner} className="card">
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <div>
-                  <div style={{ fontWeight: 800 }}>{a.name}</div>
-                  <small>
-                    <code>{a.owner}</code>
-                  </small>
+      {/* Agent Grid */}
+      {loadingAgents ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {[1, 2, 3, 4, 5, 6].map((i) => (
+            <div key={i} className="glass-card p-6">
+              <div className="mb-4 flex items-center gap-4">
+                <div className="shimmer h-14 w-14 rounded-2xl" />
+                <div className="flex-1 space-y-2">
+                  <div className="shimmer h-5 w-3/4 rounded-lg" />
+                  <div className="shimmer h-3 w-1/2 rounded-lg" />
                 </div>
               </div>
-
-              <div style={{ height: 10 }} />
-
-              <button
-                onClick={() => {
-                  setSelectedAgent(a);
-                  setError(null);
-                  setLastDigest(null);
-                }}
-                className={selected ? undefined : "secondary"}
-              >
-                {selected ? "Selected" : "Select agent"}
-              </button>
+              <div className="shimmer mb-3 h-4 w-full rounded-lg" />
+              <div className="shimmer h-10 w-full rounded-xl" />
             </div>
-          );
-        })}
-      </div>
-
-      <div style={{ height: 18 }} />
-
-      <div className="card">
-        <h2 style={{ marginTop: 0 }}>Create agentic escrow</h2>
-
-        <small style={{ opacity: 0.85 }}>
-          Selected agent: {selectedAgent ? (
-            <>
-              <b>{selectedAgent.name}</b> (<code>{selectedAgent.owner}</code>)
-            </>
-          ) : (
-            <b>none</b>
-          )}
-        </small>
-
-        <div style={{ height: 12 }} />
-
-        <div style={{ display: "grid", gap: 10 }}>
-          <div>
-            <label>Job title</label>
-            <input value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} />
-          </div>
-
-          <div>
-            <label>Job description</label>
-            <textarea
-              rows={4}
-              value={jobDescription}
-              onChange={(e) => setJobDescription(e.target.value)}
-            />
-          </div>
-
-          <div>
-            <label>Job category</label>
-            <input
-              value={jobCategory}
-              onChange={(e) => setJobCategory(e.target.value)}
-              placeholder="e.g. dev, design, writing"
-            />
-          </div>
-
-          <div className="row">
-            <div style={{ flex: 1, minWidth: 220 }}>
-              <label>Duration (u8)</label>
-              <input
-                value={String(duration)}
-                onChange={(e) => setDuration(Number(e.target.value || 0))}
-                placeholder="7"
-              />
-            </div>
-            <div style={{ flex: 1, minWidth: 220 }}>
-              <label>Budget (SUI or MIST)</label>
-              <input
-                value={budgetInput}
-                onChange={(e) => setBudgetInput(e.target.value)}
-                placeholder="0.1"
-              />
-              <small style={{ opacity: 0.75 }}>
-                Parsed: {mistToSui(parseMist(budgetInput)).toFixed(9)} SUI
-              </small>
-            </div>
-          </div>
-
-          <div>
-            <label>Main agent price (SUI or MIST)</label>
-            <input
-              value={mainAgentPriceInput}
-              onChange={(e) => setMainAgentPriceInput(e.target.value)}
-              placeholder="0.05"
-            />
-            <small style={{ opacity: 0.75 }}>
-              Parsed: {mistToSui(parseMist(mainAgentPriceInput)).toFixed(9)} SUI
-            </small>
-          </div>
-
-          <div className="row">
-            <button onClick={onCreateEscrow} disabled={isPending}>
-              {isPending ? "Submitting…" : "Create escrow"}
-            </button>
-            <button
-              className="secondary"
-              onClick={() => {
-                setError(null);
-                setLastDigest(null);
-              }}
-              type="button"
-            >
-              Clear status
-            </button>
-          </div>
-
-          {error ? (
-            <div style={{ color: "#fca5a5" }}>
-              <b>Error:</b> {error}
-            </div>
-          ) : null}
-
-          {lastDigest ? (
-            <div>
-              <b>Tx digest:</b> <code>{lastDigest}</code>
-            </div>
-          ) : null}
-
-          <details>
-            <summary>Contract objects (testnet)</summary>
-            <ul>
-              <li>
-                AgentRegistry: <code>{cfg.agentRegistryId}</code> (shared v
-                {cfg.agentRegistryInitialSharedVersion})
-              </li>
-              <li>
-                AgenticEscrowTable: <code>{cfg.agenticEscrowTableId}</code>
-                (shared v {cfg.agenticEscrowTableInitialSharedVersion})
-              </li>
-              <li>
-                Clock: <code>{cfg.clockId}</code>
-              </li>
-            </ul>
-          </details>
+          ))}
         </div>
-      </div>
+      ) : filteredAgents.length === 0 ? (
+        <div className="glass-card flex flex-col items-center justify-center py-20 text-center">
+          <Bot className="mb-4 h-12 w-12 text-(--text-muted)" />
+          <h3 className="mb-2 text-lg font-semibold">No agents found</h3>
+          <p className="text-sm text-(--text-muted)">
+            {searchQuery ? "Try a different search term" : "No agents have been registered yet"}
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {filteredAgents.map((agent) => (
+            <div
+              key={agent.owner}
+              className="agent-card glass-card group relative p-6"
+            >
+              <div className="relative z-10">
+                {/* Header: avatar + name */}
+                <div className="mb-3 flex items-center gap-4">
+                  <div className="relative">
+                    <img
+                      src={agent.avatar || generateAvatarUrl(agent.owner)}
+                      alt={agent.name}
+                      className="h-14 w-14 rounded-2xl border border-(--border-subtle)"
+                    />
+                    {agent.isActive && (
+                      <div className="pulse-dot absolute -bottom-0.5 -right-0.5" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="truncate text-base font-semibold">{agent.name}</h3>
+                    <p className="truncate font-mono text-xs text-(--text-muted)">
+                      {agent.owner.slice(0, 8)}...{agent.owner.slice(-6)}
+                    </p>
+                  </div>
+                </div>
 
-      <div style={{ height: 18 }} />
+                {/* Description */}
+                {agent.description && (
+                  <p className="mb-3 line-clamp-2 text-sm text-(--text-secondary)">
+                    {agent.description}
+                  </p>
+                )}
 
-      <small style={{ opacity: 0.7 }}>
-        Next steps: add Walrus upload for job files / proofs.
-        <br />
-        Env required: <code>NEXT_PUBLIC_ENOKI_API_KEY</code>,
-        <code>NEXT_PUBLIC_GOOGLE_CLIENT_ID</code>, <code>NEXT_PUBLIC_SITE_URL</code>.
-      </small>
+                {/* Badges: capabilities + model */}
+                <div className="mb-3 flex flex-wrap gap-1.5">
+                  {agent.modelType && (
+                    <span className="badge flex items-center gap-1">
+                      <Cpu className="h-3 w-3" />
+                      {agent.modelType}
+                    </span>
+                  )}
+                  {agent.capabilities.slice(0, 2).map((cap) => (
+                    <span key={cap} className="badge">{cap}</span>
+                  ))}
+                  {agent.capabilities.length > 2 && (
+                    <span className="badge">+{agent.capabilities.length - 2}</span>
+                  )}
+                  {agent.isActive ? (
+                    <span className="badge-success badge">Active</span>
+                  ) : (
+                    <span className="badge" style={{ color: "var(--text-muted)" }}>Inactive</span>
+                  )}
+                </div>
+
+                {/* Stats row */}
+                <div className="mb-4 flex items-center gap-4 text-xs text-(--text-muted)">
+                  {agent.rating > 0 && (
+                    <span className="flex items-center gap-1">
+                      <Star className="h-3 w-3 text-amber-400" />
+                      {(agent.rating / 1).toFixed(0)}/100
+                    </span>
+                  )}
+                  {agent.completedTasks > 0 && (
+                    <span className="flex items-center gap-1">
+                      <CheckCircle2 className="h-3 w-3" />
+                      {agent.completedTasks} jobs
+                    </span>
+                  )}
+                  {agent.totalReviews > 0 && (
+                    <span>{agent.totalReviews} reviews</span>
+                  )}
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      router.push(`/agent/${agent.owner}`);
+                    }}
+                    className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl bg-(--bg-card) px-4 py-3 text-sm font-medium text-(--text-secondary) transition-all hover:bg-(--accent-glow) hover:text-(--accent-light)"
+                  >
+                    <Eye className="h-4 w-4" />
+                    View Profile
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      router.push(`/agent/${agent.owner}?tab=job`);
+                    }}
+                    className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500/10 to-purple-500/10 px-4 py-3 text-sm font-medium text-(--accent-light) transition-all hover:from-indigo-500/20 hover:to-purple-500/20"
+                  >
+                    Create Job
+                    <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Footer */}
+      <footer className="mt-20 border-t border-(--border-subtle) pb-8 pt-8 text-center text-sm text-(--text-muted)">
+        Built on Sui &middot; Escrow-powered &middot; Testnet
+      </footer>
     </div>
   );
+}
+
+// ---- BCS Decoder for vector<AgentProfileInfo> ----
+// AgentProfileInfo { owner: address, avatar: String, name: String, capabilities: vector<String>,
+//   description: String, rating: u64, total_reviews: u64, completed_tasks: u64,
+//   created_at: u64, model_type: String, is_active: bool }
+
+function decodeBcsProfiles(data: Uint8Array): AgentProfile[] {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let offset = 0;
+
+  function readULEB128(): number {
+    let result = 0;
+    let shift = 0;
+    while (offset < data.length) {
+      const byte = data[offset++];
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    return result;
+  }
+
+  function readAddress(): string {
+    const bytes = data.slice(offset, offset + 32);
+    offset += 32;
+    return "0x" + Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function readString(): string {
+    const len = readULEB128();
+    const bytes = data.slice(offset, offset + len);
+    offset += len;
+    return new TextDecoder().decode(bytes);
+  }
+
+  function readU64(): number {
+    const lo = view.getUint32(offset, true);
+    const hi = view.getUint32(offset + 4, true);
+    offset += 8;
+    return lo + hi * 0x100000000;
+  }
+
+  function readBool(): boolean {
+    return data[offset++] !== 0;
+  }
+
+  function readVectorString(): string[] {
+    const len = readULEB128();
+    const result: string[] = [];
+    for (let i = 0; i < len; i++) {
+      result.push(readString());
+    }
+    return result;
+  }
+
+  try {
+    const count = readULEB128();
+    const profiles: AgentProfile[] = [];
+
+    for (let i = 0; i < count; i++) {
+      const owner = readAddress();
+      const avatar = readString();
+      const name = readString();
+      const capabilities = readVectorString();
+      const description = readString();
+      const rating = readU64();
+      const totalReviews = readU64();
+      const completedTasks = readU64();
+      const createdAt = readU64();
+      const modelType = readString();
+      const isActive = readBool();
+
+      profiles.push({
+        owner,
+        avatar,
+        name,
+        capabilities,
+        description,
+        rating,
+        totalReviews,
+        completedTasks,
+        createdAt,
+        modelType,
+        isActive,
+      });
+    }
+
+    return profiles;
+  } catch (e) {
+    console.error("BCS decode error:", e);
+    return [];
+  }
 }
