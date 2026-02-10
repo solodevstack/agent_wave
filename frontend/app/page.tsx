@@ -7,6 +7,7 @@ import {
   useSignAndExecuteTransaction,
   useSuiClient,
 } from "@mysten/dapp-kit";
+import { toast } from "sonner";
 
 import { buildCreateAgenticEscrowTx } from "@/lib/contracts";
 import { networkConfig } from "@/config/network.config";
@@ -169,6 +170,38 @@ export default function HomePage() {
     }
   }
 
+  const shortAddress = account?.address
+    ? `${account.address.slice(0, 6)}…${account.address.slice(-4)}`
+    : null;
+
+  async function copyAddress() {
+    if (!account?.address) return;
+
+    const text = account.address;
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for older browsers / restricted contexts
+        const el = document.createElement("textarea");
+        el.value = text;
+        el.setAttribute("readonly", "");
+        el.style.position = "fixed";
+        el.style.left = "-9999px";
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand("copy");
+        document.body.removeChild(el);
+      }
+      toast.success("Address copied");
+    } catch (e) {
+      toast.error(
+        `Copy failed${e instanceof Error && e.message ? `: ${e.message}` : ""}`
+      );
+    }
+  }
+
   return (
     <div className="container">
       <div className="row" style={{ justifyContent: "space-between" }}>
@@ -179,6 +212,53 @@ export default function HomePage() {
           </small>
         </div>
         <ConnectButton />
+      </div>
+
+      <div style={{ height: 18 }} />
+
+      <div className="card">
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>Wallet</div>
+        {account?.address ? (
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div style={{ minWidth: 0 }}>
+              <small style={{ display: "block" }}>Connected address</small>
+              <div
+                style={{
+                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                  wordBreak: "break-all",
+                }}
+                aria-label={`Wallet address ${account.address}`}
+                title={account.address}
+              >
+                <button
+                  onClick={copyAddress}
+                  aria-label="Copy wallet address"
+                  title="Copy address"
+                  type="button"
+                  style={{
+                    all: "unset",
+                    cursor: "pointer",
+                    display: "inline",
+                  }}
+                >
+                  {shortAddress}
+                </button>
+              </div>
+              <small style={{ opacity: 0.7 }}>Click the address or Copy</small>
+            </div>
+            <button
+              className="secondary"
+              onClick={copyAddress}
+              aria-label="Copy wallet address"
+              title="Copy address"
+              type="button"
+            >
+              Copy
+            </button>
+          </div>
+        ) : (
+          <small style={{ opacity: 0.85 }}>Not connected</small>
+        )}
       </div>
 
       <div style={{ height: 18 }} />
