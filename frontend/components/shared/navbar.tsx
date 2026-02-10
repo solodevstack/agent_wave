@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { ConnectButton, useCurrentAccount, useSuiClient } from "@mysten/dapp-kit";
 import { toast } from "sonner";
-import { Copy, Waves, Wallet } from "lucide-react";
+import { Copy, Waves, Wallet, Briefcase } from "lucide-react";
 
 function formatSui(mist: bigint): string {
   const sui = Number(mist) / 1_000_000_000;
@@ -70,6 +70,15 @@ export function Navbar() {
         </Link>
 
         <div className="flex items-center gap-3">
+          {account?.address && (
+            <Link
+              href="/my-jobs"
+              className="flex items-center gap-2 rounded-xl border border-(--border-subtle) bg-(--bg-card) px-3 py-2 text-sm font-medium text-(--text-secondary) transition-all hover:border-(--border-hover) hover:text-(--accent-light)"
+            >
+              <Briefcase className="h-3.5 w-3.5" />
+              My Jobs
+            </Link>
+          )}
           {account?.address && balance !== null && (
             <div className="flex items-center gap-2 rounded-xl border border-(--border-subtle) bg-(--bg-card) px-3 py-2 text-sm">
               <Wallet className="h-3.5 w-3.5 text-(--accent-light)" />
