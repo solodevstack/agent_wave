@@ -374,6 +374,19 @@ export default function AgentPage({
       const digest = (res as any)?.digest || (res as any)?.effects?.transactionDigest;
       setLastDigest(digest ?? null);
       toast.success("Escrow created successfully!");
+
+      // Notify the AI agent via webhook (best-effort, non-blocking)
+      fetch("/api/notify-agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          escrowDigest: digest,
+          jobTitle: jobTitle.trim(),
+          mainAgent: agentAddress,
+          budget: budgetMist.toString(),
+          mainAgentPrice: mainAgentPriceMist.toString(),
+        }),
+      }).catch(() => {/* silent — notification is best-effort */});
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
