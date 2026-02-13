@@ -6,6 +6,7 @@ import {
   useSuiClient,
 } from "@mysten/dapp-kit";
 import { Transaction } from "@mysten/sui/transactions";
+import { bcs } from "@mysten/sui/bcs";
 import { networkConfig } from "@/config/network.config";
 import {
   Briefcase,
@@ -76,101 +77,47 @@ function formatDate(ms: number): string {
   return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-// BCS decode vector<AgenticEscrowInfo>
+// BCS schema matching Move struct AgenticEscrowInfo
+const AgenticEscrowInfoBcs = bcs.struct("AgenticEscrowInfo", {
+  escrow_id: bcs.Address,
+  job_title: bcs.String,
+  client: bcs.Address,
+  custodian: bcs.Address,
+  job_description: bcs.String,
+  job_category: bcs.String,
+  duration: bcs.u8(),
+  budget: bcs.u64(),
+  current_balance: bcs.u64(),
+  status: bcs.u8(),
+  main_agent: bcs.Address,
+  main_agent_price: bcs.u64(),
+  main_agent_paid: bcs.Bool,
+  total_hired_agents: bcs.u64(),
+  blob_id: bcs.option(bcs.String),
+  created_at: bcs.u64(),
+});
+
 function decodeBcsEscrows(data: Uint8Array): EscrowInfo[] {
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  let offset = 0;
-
-  function readULEB128(): number {
-    let result = 0, shift = 0;
-    while (offset < data.length) {
-      const byte = data[offset++];
-      result |= (byte & 0x7f) << shift;
-      if ((byte & 0x80) === 0) break;
-      shift += 7;
-    }
-    return result;
-  }
-
-  function readAddress(): string {
-    const bytes = data.slice(offset, offset + 32);
-    offset += 32;
-    return "0x" + Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
-  }
-
-  function readString(): string {
-    const len = readULEB128();
-    const bytes = data.slice(offset, offset + len);
-    offset += len;
-    return new TextDecoder().decode(bytes);
-  }
-
-  function readU64(): number {
-    const lo = view.getUint32(offset, true);
-    const hi = view.getUint32(offset + 4, true);
-    offset += 8;
-    return lo + hi * 0x100000000;
-  }
-
-  function readU8(): number {
-    return data[offset++];
-  }
-
-  function readBool(): boolean {
-    return data[offset++] !== 0;
-  }
-
-  function readID(): string {
-    return readAddress(); // ID is 32 bytes like address
-  }
-
-  function readOptionID(): string | null {
-    const hasValue = data[offset++];
-    if (hasValue === 0) return null;
-    return readID();
-  }
-
-  function readOptionString(): string | null {
-    const hasValue = data[offset++];
-    if (hasValue === 0) return null;
-    return readString();
-  }
-
   try {
-    const count = readULEB128();
-    const escrows: EscrowInfo[] = [];
-
-    for (let i = 0; i < count; i++) {
-      // AgenticEscrowInfo field order:
-      // escrow_id, job_title, client, custodian, job_description, job_category,
-      // duration(u8), budget(u64), current_balance(u64), status(u8),
-      // main_agent, main_agent_price(u64), main_agent_paid(bool),
-      // total_hired_agents(u64), blob_id(Option<ID>), created_at(u64)
-      const escrowId = readID();
-      const jobTitle = readString();
-      const client = readAddress();
-      const custodian = readAddress();
-      const jobDescription = readString();
-      const jobCategory = readString();
-      const duration = readU8();
-      const budget = readU64();
-      const currentBalance = readU64();
-      const status = readU8();
-      const mainAgent = readAddress();
-      const mainAgentPrice = readU64();
-      const mainAgentPaid = readBool();
-      const totalHiredAgents = readU64();
-      const blobId = readOptionString();
-      const createdAt = readU64();
-
-      escrows.push({
-        escrowId, jobTitle, client, custodian, jobDescription, jobCategory,
-        duration, budget, currentBalance, status, mainAgent, mainAgentPrice,
-        mainAgentPaid, totalHiredAgents, blobId, createdAt,
-      });
-    }
-
-    return escrows;
+    const parsed = bcs.vector(AgenticEscrowInfoBcs).parse(data);
+    return parsed.map((info) => ({
+      escrowId: info.escrow_id,
+      jobTitle: info.job_title,
+      client: info.client,
+      custodian: info.custodian,
+      jobDescription: info.job_description,
+      jobCategory: info.job_category,
+      duration: info.duration,
+      budget: Number(info.budget),
+      currentBalance: Number(info.current_balance),
+      status: info.status,
+      mainAgent: info.main_agent,
+      mainAgentPrice: Number(info.main_agent_price),
+      mainAgentPaid: info.main_agent_paid,
+      totalHiredAgents: Number(info.total_hired_agents),
+      blobId: info.blob_id ?? null,
+      createdAt: Number(info.created_at),
+    }));
   } catch (e) {
     console.error("BCS escrow decode error:", e);
     return [];
@@ -357,7 +304,7 @@ export default function MyJobsPage() {
                     )}
                   </div>
                   <a
-                    href={`https://suiscan.xyz/testnet/object/${esc.escrowId}`}
+                    href={`https://testnet.suivision.xyz/object/${esc.escrowId}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center gap-1 text-xs text-(--text-muted) hover:text-(--text-secondary)"
@@ -454,6 +401,13 @@ export default function MyJobsPage() {
                       <FileText className="h-4 w-4" />
                       View on Walrus
                     </a>
+                  )}
+
+                  {/* Blob ID */}
+                  {hasBlobId && (
+                    <div className="w-full mt-2 text-xs text-(--text-muted) font-mono break-all">
+                      Blob ID: {esc.blobId}
+                    </div>
                   )}
 
                   {/* Done but no blob */}
