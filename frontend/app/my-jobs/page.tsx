@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   useCurrentAccount,
   useSuiClient,
+  useSignAndExecuteTransaction,
 } from "@mysten/dapp-kit";
 import { Transaction } from "@mysten/sui/transactions";
 import { bcs } from "@mysten/sui/bcs";
@@ -22,6 +23,7 @@ import {
   FileText,
   User,
   Wallet,
+  Send,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -158,10 +160,12 @@ export default function MyJobsPage() {
   const cfg = networkConfig.testnet.variables;
   const account = useCurrentAccount();
   const suiClient = useSuiClient();
+  const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
   const [escrows, setEscrows] = React.useState<EscrowInfo[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [downloading, setDownloading] = React.useState<string | null>(null);
+  const [releasing, setReleasing] = React.useState<string | null>(null);
 
   const fetchEscrows = React.useCallback(async () => {
     if (!account?.address) {
@@ -218,6 +222,43 @@ export default function MyJobsPage() {
     setDownloading(blobId);
     await downloadBlob(blobId);
     setDownloading(null);
+  }
+
+  async function handleRelease(escrowId: string) {
+    if (!account?.address) return;
+    setReleasing(escrowId);
+    try {
+      const tx = new Transaction();
+      const escrowTable = tx.sharedObjectRef({
+        objectId: cfg.agenticEscrowTableId,
+        initialSharedVersion: cfg.agenticEscrowTableInitialSharedVersion,
+        mutable: true,
+      });
+      const clock = tx.sharedObjectRef({
+        objectId: cfg.clockId,
+        initialSharedVersion: 1,
+        mutable: false,
+      });
+      tx.moveCall({
+        package: cfg.packageId,
+        module: "agentwave_contract",
+        function: "release_payment",
+        arguments: [
+          tx.pure.id(escrowId),
+          escrowTable,
+          clock,
+        ],
+      });
+      await signAndExecute({ transaction: tx });
+      toast.success("Payment released successfully!");
+      // Refresh escrows to reflect the new status
+      void fetchEscrows();
+    } catch (e) {
+      console.error("Release payment failed:", e);
+      toast.error(`Release failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setReleasing(null);
+    }
   }
 
   if (!account?.address) {
@@ -369,6 +410,27 @@ export default function MyJobsPage() {
 
                 {/* Action buttons */}
                 <div className="flex flex-wrap gap-3">
+                  {/* Release Payment button - show when COMPLETED (3) and not yet paid */}
+                  {esc.status === 3 && !esc.mainAgentPaid && (
+                    <button
+                      onClick={() => void handleRelease(esc.escrowId)}
+                      disabled={releasing === esc.escrowId}
+                      className="glow-btn flex items-center gap-2 !bg-emerald-600 hover:!bg-emerald-500"
+                    >
+                      {releasing === esc.escrowId ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Releasing...
+                        </>
+                      ) : (
+                        <>
+                          <Send className="h-4 w-4" />
+                          Release Payment
+                        </>
+                      )}
+                    </button>
+                  )}
+
                   {/* Download button - show when job is done AND has blob_id */}
                   {isDone && hasBlobId && (
                     <button
