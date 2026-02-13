@@ -130,6 +130,12 @@ function decodeBcsEscrows(data: Uint8Array): EscrowInfo[] {
     return readID();
   }
 
+  function readOptionString(): string | null {
+    const hasValue = data[offset++];
+    if (hasValue === 0) return null;
+    return readString();
+  }
+
   try {
     const count = readULEB128();
     const escrows: EscrowInfo[] = [];
@@ -154,7 +160,7 @@ function decodeBcsEscrows(data: Uint8Array): EscrowInfo[] {
       const mainAgentPrice = readU64();
       const mainAgentPaid = readBool();
       const totalHiredAgents = readU64();
-      const blobId = readOptionID();
+      const blobId = readOptionString();
       const createdAt = readU64();
 
       escrows.push({

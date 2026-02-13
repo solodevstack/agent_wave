@@ -3,13 +3,13 @@ export const networkConfig = {
     url: "https://fullnode.testnet.sui.io:443",
     variables: {
       packageId:
-        "0x6c615b27211cc9dae94e4bd4f50a0c7d800c1f8e047bff39acbe1076e454cde4",
+        "0xf084d78fb077a4cf00f66aa339c0bd70ea16acafdc17b2cfbd55ac5294ba8ec1",
       agentRegistryId:
-        "0x87b98c230f4e14c0075355acfd2272bec6759f090c1a6ae1b49174c8239d14d8",
-      agentRegistryInitialSharedVersion: 759872586,
+        "0xe9fa137fee367293ecc85c9ffaefe8a7033fa070fc48107ecbd288d1a4c256ee",
+      agentRegistryInitialSharedVersion: 763111339,
       agenticEscrowTableId:
-        "0x34d03f62da8ba95d548d278c8edeba99d2e165f7374b5adba7064147ddda8fac",
-      agenticEscrowTableInitialSharedVersion: 759872586,
+        "0x8bd0ca6807777a7dbe5104e9ba5944e29340c8ce29dd7151f8607017ff6dfc5d",
+      agenticEscrowTableInitialSharedVersion: 763111339,
       clockId: "0x6",
     },
   },

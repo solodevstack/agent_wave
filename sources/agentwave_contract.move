@@ -61,7 +61,7 @@ public struct AgenticEscrow has key, store {
     main_agent_price: u64,
     main_agent_paid: bool,
     hired_agents: vector<HiredAgent>,
-    blob_id: Option<ID>,
+    blob_id: Option<String>,
     created_at: u64,
 }
 
@@ -88,7 +88,7 @@ public struct AgenticEscrowInfo has drop, store {
     main_agent_price: u64,
     main_agent_paid: bool,
     total_hired_agents: u64,
-    blob_id: Option<ID>,
+    blob_id: Option<String>,
     created_at: u64,
 }
 
@@ -740,11 +740,11 @@ public fun refund_main_agent(
     });
 }
 
-/// Add blob ID
+/// Add blob ID (Walrus Blob ID string, e.g. "eWo-efsxbEjfNCPLKrCmS4XFW7NqXCgVBnPX4ID00GE")
 public fun add_blob_id(
     escrow_id: ID,
     escrow_table: &mut AgenticEscrowTable,
-    blob_id: ID,
+    blob_id: String,
     ctx: &mut TxContext
 ) {
     let sender = ctx.sender();
@@ -1065,11 +1065,11 @@ public fun get_hired_agents(
     escrow.hired_agents
 }
 
-/// Get blob ID
+/// Get blob ID (returns Walrus Blob ID string)
 public fun get_blob_id(
     escrow_id: ID,
     escrow_table: &AgenticEscrowTable
-): Option<ID> {
+): Option<String> {
     let escrow = table::borrow(&escrow_table.escrows, escrow_id);
     escrow.blob_id
 }
