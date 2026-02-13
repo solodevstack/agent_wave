@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     // Use /hooks/wake to inject into the main session (not isolated /hooks/agent)
     const hooksUrl =
       process.env.OPENCLAW_HOOKS_URL ||
-      `http://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || "63362"}/hooks/wake`;
+      `http://76.13.49.122:${process.env.OPENCLAW_GATEWAY_PORT || "63663"}/hooks/wake`;
 
     if (!hooksToken) {
       // Webhook not configured — silently succeed (don't block the user)
