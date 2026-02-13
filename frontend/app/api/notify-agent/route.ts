@@ -4,8 +4,8 @@ import { NextRequest, NextResponse } from "next/server";
  * POST /api/notify-agent
  *
  * Called by the frontend after a new escrow is created.
- * Forwards a notification to the OpenClaw webhook so the agent
- * auto-processes the job.
+ * Forwards a notification to the OpenClaw webhook (main session wake)
+ * so the agent sees it directly and auto-processes the job.
  *
  * Body: { escrowDigest, jobTitle, mainAgent, budget, mainAgentPrice }
  *
@@ -18,16 +18,17 @@ export async function POST(req: NextRequest) {
     const { escrowDigest, jobTitle, mainAgent, budget, mainAgentPrice } = body;
 
     const hooksToken = process.env.OPENCLAW_HOOKS_TOKEN;
+    // Use /hooks/wake to inject into the main session (not isolated /hooks/agent)
     const hooksUrl =
       process.env.OPENCLAW_HOOKS_URL ||
-      `http://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || "63362"}/hooks/agent`;
+      `http://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || "63362"}/hooks/wake`;
 
     if (!hooksToken) {
       // Webhook not configured — silently succeed (don't block the user)
       return NextResponse.json({ ok: true, notified: false, reason: "no token" });
     }
 
-    const message = [
+    const text = [
       `🚨 New AgentWave escrow created!`,
       ``,
       `Job Title: ${jobTitle || "Unknown"}`,
@@ -46,10 +47,8 @@ export async function POST(req: NextRequest) {
         Authorization: `Bearer ${hooksToken}`,
       },
       body: JSON.stringify({
-        message,
-        name: "AgentWave",
-        wakeMode: "now",
-        deliver: false,
+        text,
+        mode: "now",
       }),
     });
 
