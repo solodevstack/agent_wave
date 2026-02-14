@@ -376,6 +376,7 @@ export default function AgentPage({
       toast.success("Escrow created successfully!");
 
       // Notify the AI agent via webhook (best-effort, non-blocking)
+      console.log("[escrow] notifying agent, digest:", digest);
       fetch("/api/notify-agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -386,7 +387,9 @@ export default function AgentPage({
           budget: budgetMist.toString(),
           mainAgentPrice: mainAgentPriceMist.toString(),
         }),
-      }).catch(() => {/* silent — notification is best-effort */});
+      })
+        .then((r) => r.json().then((d) => console.log("[escrow] notify response:", d)))
+        .catch((err) => console.error("[escrow] notify error:", err));
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }

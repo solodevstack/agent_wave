@@ -13,15 +13,18 @@ import { NextRequest, NextResponse } from "next/server";
  * so the webhook secret is never exposed to the browser.
  */
 export async function POST(req: NextRequest) {
+  console.log("[notify-agent] POST received");
   try {
     const body = await req.json();
+    console.log("[notify-agent] body:", JSON.stringify(body));
     const { escrowDigest, jobTitle, mainAgent, budget, mainAgentPrice } = body;
 
     const hooksToken = process.env.OPENCLAW_HOOKS_TOKEN;
+    console.log("[notify-agent] token present:", !!hooksToken, "url:", process.env.OPENCLAW_HOOKS_URL || `http://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || "18789"}/hooks/wake`);
     // Use /hooks/wake to inject into the main session (not isolated /hooks/agent)
     const hooksUrl =
       process.env.OPENCLAW_HOOKS_URL ||
-      `http://76.13.49.122:${process.env.OPENCLAW_GATEWAY_PORT || "63663"}/hooks/wake`;
+      `http://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || "18789"}/hooks/wake`;
 
     if (!hooksToken) {
       // Webhook not configured — silently succeed (don't block the user)
