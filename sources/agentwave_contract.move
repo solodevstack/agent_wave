@@ -75,6 +75,8 @@ public struct AgenticEscrowTable has key {
     id: UID,
     escrows: Table<ID, AgenticEscrow>,
     escrow_ids: TableVec<ID>,
+    auditor: address,        // Protocol-level auditor address (cannot be overridden by users)
+    admin: address,          // Admin who can update the auditor
 }
 
 /// Info struct for returning escrow data
@@ -193,6 +195,8 @@ fun init(ctx: &mut TxContext) {
         id: object::new(ctx),
         escrows: table::new<ID, AgenticEscrow>(ctx),
         escrow_ids: table_vec::empty(ctx),
+        auditor: @custodian_addr,    // Default: custodian is the auditor
+        admin: @custodian_addr,      // Default: custodian is the admin
     };
     transfer::share_object(escrow_table);
 }
@@ -200,11 +204,10 @@ fun init(ctx: &mut TxContext) {
 // ===== Public Entry Functions =====
 
 /// Create a new agentic escrow
-/// auditor: the agent responsible for reviewing and unlocking the sealed blob
+/// The auditor is always set from the escrow_table (protocol-level, cannot be overridden by users)
 public fun create_agentic_escrow(
     escrow_table: &mut AgenticEscrowTable,
     main_agent: address,
-    auditor: address,
     job_title: String,
     job_description: String,
     job_category: String,
@@ -230,6 +233,7 @@ public fun create_agentic_escrow(
 
     let escrow_uid = object::new(ctx);
     let escrow_id = object::uid_to_inner(&escrow_uid);
+    let protocol_auditor = escrow_table.auditor;  // Use protocol-level auditor
 
     let escrow = AgenticEscrow {
         id: escrow_uid,
@@ -248,7 +252,7 @@ public fun create_agentic_escrow(
         hired_agents: vector::empty(),
         blob_id: option::none(),
         created_at: timestamp,
-        auditor,
+        auditor: protocol_auditor,
         is_audited: false,
         allowlist_id: option::none(),
     };
@@ -264,7 +268,7 @@ public fun create_agentic_escrow(
         budget,
         main_agent_price,
         job_title,
-        auditor,
+        auditor: protocol_auditor,
         timestamp,
     });
 }
@@ -812,6 +816,30 @@ public fun add_allowlist_id(
     escrow.allowlist_id = option::some(allowlist_id);
 }
 
+/// ADMIN: Set the protocol auditor address
+/// Only the current admin can call this
+public fun set_auditor(
+    escrow_table: &mut AgenticEscrowTable,
+    new_auditor: address,
+    ctx: &mut TxContext
+) {
+    let sender = ctx.sender();
+    assert!(sender == escrow_table.admin, ENotAuthorized);
+    escrow_table.auditor = new_auditor;
+}
+
+/// ADMIN: Transfer admin rights to a new address
+/// Only the current admin can call this
+public fun set_admin(
+    escrow_table: &mut AgenticEscrowTable,
+    new_admin: address,
+    ctx: &mut TxContext
+) {
+    let sender = ctx.sender();
+    assert!(sender == escrow_table.admin, ENotAuthorized);
+    escrow_table.admin = new_admin;
+}
+
 /// Check whether an allowlist has been created for this escrow
 public fun check_allowlist_is_some(
     escrow_id: ID,
@@ -1180,10 +1208,20 @@ public fun get_main_agent(escrow_table: &AgenticEscrowTable, escrow_id: ID): add
     escrow.main_agent
 }
 
-/// Get auditor address
+/// Get auditor address for a specific escrow
 public fun get_auditor(escrow_table: &AgenticEscrowTable, escrow_id: ID): address {
     let escrow = table::borrow(&escrow_table.escrows, escrow_id);
     escrow.auditor
+}
+
+/// Get protocol-level auditor address
+public fun get_protocol_auditor(escrow_table: &AgenticEscrowTable): address {
+    escrow_table.auditor
+}
+
+/// Get admin address
+public fun get_admin(escrow_table: &AgenticEscrowTable): address {
+    escrow_table.admin
 }
 
 /// Get is_audited flag — true means blob is unlocked for client to decrypt
