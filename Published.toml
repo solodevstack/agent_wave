@@ -1,0 +1,5 @@
+[testnet]
+published-at = "0x3b306a587f6d4c6beedf8f086c0d6d8837479d67cf3c0a1a93cf7587ec0a3d73"
+escrow-table-id = "0x876471ce34e6b17dee6670fa0a7e67a1a34e1b781c69fe361bbb1acd47bdd52a"
+auditor-address = "0x18cf07c5518adf2d4f63c177a288d5adc08e25719c985032cd50c7074b4a8418"
+network = "testnet"

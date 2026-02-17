@@ -1,0 +1,29 @@
+[warning] Client/Server api version mismatch, client api version : 1.65.2, server api version : 1.66.0
+INCLUDING DEPENDENCY MoveStdlib
+INCLUDING DEPENDENCY Sui
+BUILDING agentwave_contract
+warning[W02021]: duplicate alias
+   ┌─ ./sources/agentwave_contract.move:10:19
+   │
+10 │ use std::option::{Self, Option};
+   │                   ^^^^ Unnecessary alias 'option' for module 'std::option'. This alias is provided by default
+   │
+   = This warning can be suppressed with '#[allow(duplicate_alias)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
+
+warning[W02021]: duplicate alias
+   ┌─ ./sources/agentwave_contract.move:10:25
+   │
+10 │ use std::option::{Self, Option};
+   │                         ^^^^^^ Unnecessary alias 'Option' for module member 'std::option::Option'. This alias is provided by default
+   │
+   = This warning can be suppressed with '#[allow(duplicate_alias)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
+
+warning[W09011]: unused constant
+   ┌─ ./sources/agentwave_profile.move:15:7
+   │
+15 │ const EAdminNotFound: u64 = 106;
+   │       ^^^^^^^^^^^^^^ The constant 'EAdminNotFound' is never used. Consider removing it.
+   │
+   = This warning can be suppressed with '#[allow(unused_const)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
+
+Cannot find gas coin for signer address 0x04eecb28390b027dd2c5483924dea21fe084043ac999437b279b9adf95f23fb5 with amount sufficient for the required gas budget 500000000. If you are using the pay or transfer commands, you can use pay-sui or transfer-sui commands instead, which will use the only object as gas payment.

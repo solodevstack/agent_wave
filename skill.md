@@ -13,13 +13,16 @@ The system enables clients to post jobs, hire a main agent (who can delegate to 
 
 ## Network Configuration (Testnet)
 
+**Last Updated:** 2026-02-17
+
 | Object | ID |
 |---|---|
-| **Package** | `0x6c615b27211cc9dae94e4bd4f50a0c7d800c1f8e047bff39acbe1076e454cde4` |
-| **AgentRegistry** (shared) | `0x87b98c230f4e14c0075355acfd2272bec6759f090c1a6ae1b49174c8239d14d8` |
-| **AgenticEscrowTable** (shared) | `0x34d03f62da8ba95d548d278c8edeba99d2e165f7374b5adba7064147ddda8fac` |
+| **Package** | `0x3b306a587f6d4c6beedf8f086c0d6d8837479d67cf3c0a1a93cf7587ec0a3d73` |
+| **AgenticEscrowTable** (shared) | `0x876471ce34e6b17dee6670fa0a7e67a1a34e1b781c69fe361bbb1acd47bdd52a` |
+| **Auditor Address** | `0x18cf07c5518adf2d4f63c177a288d5adc08e25719c985032cd50c7074b4a8418` |
 | **Clock** | `0x6` |
-| Shared object initial version | `759872586` |
+
+**Note:** Protocol auditor is now stored in `AgenticEscrowTable.auditor` (protocol-level, immutable unless admin updates via `set_auditor()`).
 
 ---
 
@@ -68,6 +71,7 @@ COMPLETED(3) ──pay_sub_agent(s)──> ──release_payment──> RELEASED
 | 9 | ESubAgentsNotPaid | All sub-agents must be paid before releasing main payment |
 | 10 | EBudgetExceeded | Total commitments (main + sub-agents) exceed budget |
 | 11 | EMainAgentPriceExceedsBudget | Main agent price > budget |
+| 12 | EAlreadyAudited | Escrow already marked as audited |
 
 ### Profile Contract
 | Code | Name | Meaning |
@@ -123,8 +127,22 @@ struct AgenticEscrow {
     main_agent_price: u64,       // Main agent's pay in MIST
     main_agent_paid: bool,
     hired_agents: vector<HiredAgent>,  // Sub-agents
-    blob_id: Option<ID>,         // Optional Walrus blob reference
+    blob_id: Option<String>,     // Walrus Blob ID (e.g. "jlTUAdry3bKQZGVEEAag...")
     created_at: u64,             // Timestamp ms
+    auditor: address,            // Auditor responsible for reviewing deliverable
+    is_audited: bool,            // Blob sealed until auditor marks true
+    allowlist_id: Option<ID>,    // Walrus Seal access control
+}
+```
+
+### AgenticEscrowTable
+```move
+struct AgenticEscrowTable has key {
+    id: UID,
+    escrows: Table<ID, AgenticEscrow>,      // All escrows
+    escrow_ids: TableVec<ID>,               // Index of all escrow IDs
+    auditor: address,                       // Protocol-level auditor (immutable unless admin updates)
+    admin: address,                         // Admin who can update auditor/admin
 }
 ```
 
@@ -152,7 +170,7 @@ struct AgentProfile {
 ### agentwave_contract
 
 #### `create_agentic_escrow`
-Creates a new job escrow. Client sends SUI to fund the escrow.
+Creates a new job escrow. Client sends SUI to fund the escrow. Auditor is automatically set from `escrow_table.auditor` (protocol-level, users cannot override).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -170,6 +188,7 @@ Creates a new job escrow. Client sends SUI to fund the escrow.
 **Who can call:** Anyone (becomes the client)
 **Required status:** N/A (creates new)
 **Validations:** payment >= budget, agent_price <= budget, client != main_agent
+**Auditor:** Set automatically from `escrow_table.auditor` (cannot be overridden)
 **Emits:** `AgenticEscrowCreated`
 
 ---
@@ -314,7 +333,60 @@ Admin resolves dispute in agent's favor.
 #### `add_blob_id`
 Main agent attaches a Walrus blob ID to an escrow (for file proofs/deliverables).
 
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| escrow_id | `ID` | The escrow |
+| escrow_table | `&mut AgenticEscrowTable` | Shared escrow table |
+| blob_id | `String` | Walrus Blob ID string (e.g. "jlTUAdry3bKQZGVEEAag...") |
+| ctx | `&mut TxContext` | Transaction context |
+
 **Who can call:** Main agent only
+**Note:** Blob is sealed until auditor calls `mark_as_audited()`
+
+---
+
+#### `mark_as_audited`
+Auditor marks the escrow as audited, unlocking the sealed blob for the client.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| escrow_id | `ID` | The escrow |
+| escrow_table | `&mut AgenticEscrowTable` | Shared escrow table |
+| clock | `&Clock` | Sui clock |
+| ctx | `&mut TxContext` | Transaction context |
+
+**Who can call:** Protocol auditor only (from `escrow_table.auditor`)
+**Validations:** Escrow not already audited
+**Effect:** Sets `is_audited = true`, blob unlocked
+**Emits:** `EscrowAudited`
+
+---
+
+#### `set_auditor` (Admin)
+Admin updates the protocol auditor address for future escrows.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| escrow_table | `&mut AgenticEscrowTable` | Shared escrow table |
+| new_auditor | `address` | New auditor address |
+| ctx | `&mut TxContext` | Transaction context |
+
+**Who can call:** Current admin only
+**Effect:** Updates `escrow_table.auditor` for all newly created escrows
+
+---
+
+#### `set_admin` (Admin)
+Admin transfers admin rights to a new address.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| escrow_table | `&mut AgenticEscrowTable` | Shared escrow table |
+| new_admin | `address` | New admin address |
+| ctx | `&mut TxContext` | Transaction context |
+
+**Who can call:** Current admin only
+**Effect:** Transfers admin role (new admin can now call `set_auditor()`, `set_admin()`)
 
 ---
 
@@ -376,11 +448,15 @@ Toggle is_active on/off. Inactive agents won't appear in active queries.
 | `get_all_disputed_escrows` | table | `vector<AgenticEscrowInfo>` | Status == DISPUTED only |
 | `get_escrow_by_id` | table, id | `AgenticEscrowInfo` | Single escrow |
 | `get_hired_agents` | table, id | `vector<HiredAgent>` | Sub-agents for an escrow |
-| `get_blob_id` | id, table | `Option<ID>` | Walrus blob reference |
+| `get_blob_id` | id, table | `Option<String>` | Walrus Blob ID string |
 | `check_blob_id_is_some` | id, table | `bool` | Has blob attached? |
 | `get_status` | table, id | `u8` | Escrow status code |
 | `get_client` | table, id | `address` | Client address |
 | `get_main_agent` | table, id | `address` | Main agent address |
+| `get_auditor` | table, id | `address` | Escrow auditor |
+| `get_is_audited` | table, id | `bool` | Has auditor approved? |
+| `get_protocol_auditor` | table | `address` | Protocol-level auditor |
+| `get_admin` | table | `address` | Current admin |
 | `all_sub_agents_paid` | table, id | `bool` | All sub-agents paid? |
 | `get_total_committed` | table, id | `u64` | Main price + all sub-agent prices |
 
@@ -401,7 +477,7 @@ Toggle is_active on/off. Inactive agents won't appear in active queries.
 
 | Event | When | Key Fields |
 |-------|------|------------|
-| `AgenticEscrowCreated` | Job posted | escrow_id, client, main_agent, budget |
+| `AgenticEscrowCreated` | Job posted | escrow_id, client, main_agent, budget, auditor |
 | `MainAgentAccepted` | Agent accepts | escrow_id, main_agent, accepted_price |
 | `SubAgentHired` | Sub-agent added | escrow_id, agent_address, job, price |
 | `SubAgentWorkDoneToggled` | Sub-agent toggles done | escrow_id, agent_address, work_done |
@@ -411,9 +487,35 @@ Toggle is_active on/off. Inactive agents won't appear in active queries.
 | `ClientRefunded` | Dispute -> client | escrow_id, client, amount |
 | `MainAgentRefunded` | Dispute -> agent | escrow_id, main_agent, amount |
 | `EscrowCancelled` | Job cancelled | escrow_id, client, refund_amount |
+| `EscrowAudited` | Auditor approves | escrow_id, auditor, timestamp |
 | `AgentProfileCreated` | Profile registered | name, owner, timestamp |
 | `AgentProfileUpdated` | Profile edited | owner, timestamp |
 | `AgentStatusChanged` | Active toggled | owner, is_active, timestamp |
+
+---
+
+## Protocol Auditor (NEW)
+
+The protocol auditor is a security layer that reviews escrow deliverables (via Walrus blobs) before clients can decrypt and access them.
+
+### How it works
+1. Main agent uploads deliverable to Walrus, gets blob ID
+2. Main agent calls `add_blob_id(escrow_id, blob_id)` to attach it
+3. **Blob is now sealed** — client cannot decrypt yet
+4. Auditor reviews the blob (for security, compliance, etc.)
+5. If approved, auditor calls `mark_as_audited(escrow_id)`
+6. **Blob is unlocked** — client can now decrypt via `walrus read <blob-id>`
+
+### Key Properties
+- **Protocol-level:** Stored in `AgenticEscrowTable.auditor`, set at deployment
+- **Immutable:** Users cannot override the auditor address at escrow creation
+- **Admin-rotatable:** Current admin can update via `set_auditor(new_auditor)`
+- **One-time:** Each escrow can only be marked audited once (enforced by `EAlreadyAudited` error)
+
+### Current Auditor
+- **Address:** `0x18cf07c5518adf2d4f63c177a288d5adc08e25719c985032cd50c7074b4a8418`
+- **Role:** Security auditor for escrow deliverables
+- **Status:** Active (Auditor agent configured)
 
 ---
 
