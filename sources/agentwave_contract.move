@@ -17,10 +17,11 @@ const ECannotHireSelf: u64 = 4;
 const EInsufficientBalance: u64 = 5;
 const ENotInDisputeState: u64 = 6;
 const EAgentNotFound: u64 = 7;
-const EInsufficientPayment: u64 = 8;        // NEW: Payment doesn't cover budget
-const ESubAgentsNotPaid: u64 = 9;           // NEW: Must pay sub-agents before release
-const EBudgetExceeded: u64 = 10;            // NEW: Total commitments exceed budget
-const EMainAgentPriceExceedsBudget: u64 = 11; // NEW: Main agent price > budget
+const EInsufficientPayment: u64 = 8;        // Payment doesn't cover budget
+const ESubAgentsNotPaid: u64 = 9;           // Must pay sub-agents before release
+const EBudgetExceeded: u64 = 10;            // Total commitments exceed budget
+const EMainAgentPriceExceedsBudget: u64 = 11; // Main agent price > budget
+const EAlreadyAudited: u64 = 12;            // Escrow already marked as audited
 
 // ===== Status Constants =====
 const STATUS_PENDING: u8 = 0;
@@ -31,7 +32,7 @@ const STATUS_DISPUTED: u8 = 4;
 const STATUS_RESOLVED_CLIENT_REFUNDED: u8 = 5;
 const STATUS_RESOLVED_MAIN_AGENT_REFUNDED: u8 = 6;
 const STATUS_RELEASED: u8 = 7;
-const STATUS_CANCELLED: u8 = 8;             // NEW: Cancelled by client
+const STATUS_CANCELLED: u8 = 8;             // Cancelled by client
 
 // ===== Structs =====
 
@@ -63,6 +64,10 @@ public struct AgenticEscrow has key, store {
     hired_agents: vector<HiredAgent>,
     blob_id: Option<String>,
     created_at: u64,
+    // Auditor fields: blob sealed until auditor marks is_audited = true
+    auditor: address,
+    is_audited: bool,
+    allowlist_id: Option<ID>,
 }
 
 /// Global table to track all agentic escrows
@@ -90,6 +95,8 @@ public struct AgenticEscrowInfo has drop, store {
     total_hired_agents: u64,
     blob_id: Option<String>,
     created_at: u64,
+    auditor: address,
+    is_audited: bool,
 }
 
 // ===== Events =====
@@ -102,6 +109,7 @@ public struct AgenticEscrowCreated has copy, drop {
     budget: u64,
     main_agent_price: u64,
     job_title: String,
+    auditor: address,
     timestamp: u64,
 }
 
@@ -164,11 +172,17 @@ public struct SubAgentWorkDoneToggled has copy, drop {
     timestamp: u64,
 }
 
-// NEW: Event for job cancellation
 public struct EscrowCancelled has copy, drop {
     escrow_id: ID,
     client: address,
     refund_amount: u64,
+    timestamp: u64,
+}
+
+/// Emitted when auditor marks the escrow as audited, unlocking blob for client
+public struct EscrowAudited has copy, drop {
+    escrow_id: ID,
+    auditor: address,
     timestamp: u64,
 }
 
@@ -186,10 +200,11 @@ fun init(ctx: &mut TxContext) {
 // ===== Public Entry Functions =====
 
 /// Create a new agentic escrow
-/// FIX: Added payment validation to ensure payment_coin >= budget
+/// auditor: the agent responsible for reviewing and unlocking the sealed blob
 public fun create_agentic_escrow(
     escrow_table: &mut AgenticEscrowTable,
     main_agent: address,
+    auditor: address,
     job_title: String,
     job_description: String,
     job_category: String,
@@ -203,14 +218,14 @@ public fun create_agentic_escrow(
     let client = ctx.sender();
     let timestamp = sui::clock::timestamp_ms(clock);
 
-    // FIX: Validate payment covers the budget
+    // Validate payment covers the budget
     let payment_value = coin::value(&payment_coin);
     assert!(payment_value >= budget, EInsufficientPayment);
 
-    // FIX: Validate main_agent_price doesn't exceed budget
+    // Validate main_agent_price doesn't exceed budget
     assert!(main_agent_price <= budget, EMainAgentPriceExceedsBudget);
 
-    // FIX: Client cannot hire themselves as main agent
+    // Client cannot hire themselves as main agent
     assert!(main_agent != client, ECannotHireSelf);
 
     let escrow_uid = object::new(ctx);
@@ -233,6 +248,9 @@ public fun create_agentic_escrow(
         hired_agents: vector::empty(),
         blob_id: option::none(),
         created_at: timestamp,
+        auditor,
+        is_audited: false,
+        allowlist_id: option::none(),
     };
 
     table_vec::push_back(&mut escrow_table.escrow_ids, escrow_id);
@@ -246,6 +264,7 @@ public fun create_agentic_escrow(
         budget,
         main_agent_price,
         job_title,
+        auditor,
         timestamp,
     });
 }
@@ -276,7 +295,6 @@ public fun accept_job(
 }
 
 /// Main agent hires a sub-agent
-/// FIX: Added budget validation to prevent over-commitment
 public fun hire_sub_agent(
     escrow_id: ID,
     escrow_table: &mut AgenticEscrowTable,
@@ -304,7 +322,7 @@ public fun hire_sub_agent(
         EInvalidState
     );
 
-    // FIX: Calculate total committed amount and validate against budget
+    // Calculate total committed amount and validate against budget
     let mut total_sub_agent_cost: u64 = price;
     let mut i = 0;
     while (i < vector::length(&escrow.hired_agents)) {
@@ -456,7 +474,7 @@ public fun pay_sub_agent(
 }
 
 /// Client releases payment to main agent
-/// FIX: Added check to ensure all sub-agents are paid first
+/// All sub-agents must be paid first
 public fun release_payment(
     escrow_id: ID,
     escrow_table: &mut AgenticEscrowTable,
@@ -475,7 +493,7 @@ public fun release_payment(
     // Main agent must not be paid yet
     assert!(!escrow.main_agent_paid, EAlreadyPaid);
 
-    // FIX: Ensure all sub-agents have been paid before releasing main agent payment
+    // Ensure all sub-agents have been paid before releasing main agent payment
     let mut i = 0;
     while (i < vector::length(&escrow.hired_agents)) {
         let agent = vector::borrow(&escrow.hired_agents, i);
@@ -538,7 +556,7 @@ public fun release_payment(
     });
 }
 
-/// NEW: Client cancels a pending job (before agent accepts)
+/// Client cancels a pending job (before agent accepts)
 /// Full refund minus small platform fee (2%)
 public fun cancel_pending_job(
     escrow_id: ID,
@@ -756,6 +774,53 @@ public fun add_blob_id(
     escrow.blob_id = option::some(blob_id);
 }
 
+/// Auditor marks the escrow as audited, unlocking the sealed blob for the client
+public fun mark_as_audited(
+    escrow_id: ID,
+    escrow_table: &mut AgenticEscrowTable,
+    clock: &sui::clock::Clock,
+    ctx: &mut TxContext
+) {
+    let sender = ctx.sender();
+    let escrow = table::borrow_mut(&mut escrow_table.escrows, escrow_id);
+
+    // Only the designated auditor can mark as audited
+    assert!(sender == escrow.auditor, ENotAuthorized);
+
+    // Cannot audit twice
+    assert!(!escrow.is_audited, EAlreadyAudited);
+
+    escrow.is_audited = true;
+
+    let timestamp = sui::clock::timestamp_ms(clock);
+
+    event::emit(EscrowAudited {
+        escrow_id: object::uid_to_inner(&escrow.id),
+        auditor: sender,
+        timestamp,
+    });
+}
+
+/// Store the allowlist ID on the escrow (called by walrus_seal module)
+public fun add_allowlist_id(
+    escrow_id: ID,
+    escrow_table: &mut AgenticEscrowTable,
+    allowlist_id: ID,
+    _ctx: &mut TxContext
+) {
+    let escrow = table::borrow_mut(&mut escrow_table.escrows, escrow_id);
+    escrow.allowlist_id = option::some(allowlist_id);
+}
+
+/// Check whether an allowlist has been created for this escrow
+public fun check_allowlist_is_some(
+    escrow_id: ID,
+    escrow_table: &AgenticEscrowTable,
+): bool {
+    let escrow = table::borrow(&escrow_table.escrows, escrow_id);
+    option::is_some(&escrow.allowlist_id)
+}
+
 // ===== View Functions =====
 
 /// Get all escrows
@@ -787,6 +852,8 @@ public fun get_all_escrows(escrow_table: &AgenticEscrowTable): vector<AgenticEsc
                 total_hired_agents: vector::length(&escrow.hired_agents),
                 blob_id: escrow.blob_id,
                 created_at: escrow.created_at,
+                auditor: escrow.auditor,
+                is_audited: escrow.is_audited,
             };
 
             vector::push_back(&mut result, escrow_info);
@@ -831,6 +898,8 @@ public fun get_escrows_as_main_agent(
                     total_hired_agents: vector::length(&escrow.hired_agents),
                     blob_id: escrow.blob_id,
                     created_at: escrow.created_at,
+                    auditor: escrow.auditor,
+                    is_audited: escrow.is_audited,
                 };
 
                 vector::push_back(&mut result, escrow_info);
@@ -888,6 +957,8 @@ public fun get_escrows_as_sub_agent(
                     total_hired_agents: vector::length(&escrow.hired_agents),
                     blob_id: escrow.blob_id,
                     created_at: escrow.created_at,
+                    auditor: escrow.auditor,
+                    is_audited: escrow.is_audited,
                 };
 
                 vector::push_back(&mut result, escrow_info);
@@ -933,6 +1004,8 @@ public fun get_escrows_as_client(
                     total_hired_agents: vector::length(&escrow.hired_agents),
                     blob_id: escrow.blob_id,
                     created_at: escrow.created_at,
+                    auditor: escrow.auditor,
+                    is_audited: escrow.is_audited,
                 };
 
                 vector::push_back(&mut result, escrow_info);
@@ -975,6 +1048,8 @@ public fun get_all_pending_escrows(escrow_table: &AgenticEscrowTable): vector<Ag
                     total_hired_agents: vector::length(&escrow.hired_agents),
                     blob_id: escrow.blob_id,
                     created_at: escrow.created_at,
+                    auditor: escrow.auditor,
+                    is_audited: escrow.is_audited,
                 };
 
                 vector::push_back(&mut result, escrow_info);
@@ -1017,6 +1092,8 @@ public fun get_all_disputed_escrows(escrow_table: &AgenticEscrowTable): vector<A
                     total_hired_agents: vector::length(&escrow.hired_agents),
                     blob_id: escrow.blob_id,
                     created_at: escrow.created_at,
+                    auditor: escrow.auditor,
+                    is_audited: escrow.is_audited,
                 };
 
                 vector::push_back(&mut result, escrow_info);
@@ -1053,6 +1130,8 @@ public fun get_escrow_by_id(
         total_hired_agents: vector::length(&escrow.hired_agents),
         blob_id: escrow.blob_id,
         created_at: escrow.created_at,
+        auditor: escrow.auditor,
+        is_audited: escrow.is_audited,
     }
 }
 
@@ -1101,12 +1180,24 @@ public fun get_main_agent(escrow_table: &AgenticEscrowTable, escrow_id: ID): add
     escrow.main_agent
 }
 
+/// Get auditor address
+public fun get_auditor(escrow_table: &AgenticEscrowTable, escrow_id: ID): address {
+    let escrow = table::borrow(&escrow_table.escrows, escrow_id);
+    escrow.auditor
+}
+
+/// Get is_audited flag — true means blob is unlocked for client to decrypt
+public fun get_is_audited(escrow_table: &AgenticEscrowTable, escrow_id: ID): bool {
+    let escrow = table::borrow(&escrow_table.escrows, escrow_id);
+    escrow.is_audited
+}
+
 /// Get escrow IDs
 public fun get_ids(table_ids: &AgenticEscrowTable): &TableVec<ID> {
     &table_ids.escrow_ids
 }
 
-/// NEW: Helper to check if all sub-agents are paid
+/// Helper to check if all sub-agents are paid
 public fun all_sub_agents_paid(
     escrow_table: &AgenticEscrowTable,
     escrow_id: ID
@@ -1123,7 +1214,7 @@ public fun all_sub_agents_paid(
     true
 }
 
-/// NEW: Get total committed amount (main agent + sub-agents)
+/// Get total committed amount (main agent + sub-agents)
 public fun get_total_committed(
     escrow_table: &AgenticEscrowTable,
     escrow_id: ID
