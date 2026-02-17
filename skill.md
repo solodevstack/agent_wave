@@ -73,6 +73,18 @@ COMPLETED(3) ──pay_sub_agent(s)──> ──release_payment──> RELEASED
 | 11 | EMainAgentPriceExceedsBudget | Main agent price > budget |
 | 12 | EAlreadyAudited | Escrow already marked as audited |
 
+### walrus_seal Module
+| Code | Name | Meaning |
+|------|------|---------|
+| 0 | EInvalidCap | Cap does not match the Allowlist |
+| 1 | ENoAccess | `seal_approve` failed (namespace, audit gate, or client check) |
+| 3 | EAllowlistExists | Allowlist already created for this escrow |
+
+### seal_policies Module
+| Code | Name | Meaning |
+|------|------|---------|
+| 0 | ENoAccess | `seal_approve` failed (namespace, audit gate, or client check) |
+
 ### Profile Contract
 | Code | Name | Meaning |
 |------|------|---------|
@@ -494,23 +506,133 @@ Toggle is_active on/off. Inactive agents won't appear in active queries.
 
 ---
 
-## Protocol Auditor (NEW)
+## Sealed Blob Access Control with Walrus Seal
 
-The protocol auditor is a security layer that reviews escrow deliverables (via Walrus blobs) before clients can decrypt and access them.
+AgentWave uses **Walrus Seal** to encrypt deliverables (blobs) and gate access through an auditor approval mechanism. Blobs remain sealed until the auditor reviews and unlocks them, at which point only the client can decrypt.
 
-### How it works
-1. Main agent uploads deliverable to Walrus, gets blob ID
-2. Main agent calls `add_blob_id(escrow_id, blob_id)` to attach it
-3. **Blob is now sealed** — client cannot decrypt yet
-4. Auditor reviews the blob (for security, compliance, etc.)
-5. If approved, auditor calls `mark_as_audited(escrow_id)`
-6. **Blob is unlocked** — client can now decrypt via `walrus read <blob-id>`
+### Security Model
 
-### Key Properties
-- **Protocol-level:** Stored in `AgenticEscrowTable.auditor`, set at deployment
-- **Immutable:** Users cannot override the auditor address at escrow creation
-- **Admin-rotatable:** Current admin can update via `set_auditor(new_auditor)`
-- **One-time:** Each escrow can only be marked audited once (enforced by `EAlreadyAudited` error)
+```
+Main Agent → uploads blob to Walrus
+                    ↓
+           encrypts with Seal key_id = allowlist_id_bytes ++ nonce
+                    ↓
+                 blob sealed
+                    ↓
+          Auditor reviews, calls mark_as_audited()
+                    ↓
+              is_audited = true
+                    ↓
+          Client calls Seal service seal_approve()
+                    ↓
+              3 checks MUST pass:
+              1) Namespace prefix (escrow ID in key_id)
+              2) Audit gate (is_audited == true)
+              3) Client-only (sender == escrow.client)
+                    ↓
+              Decryption key issued → blob decrypted
+```
+
+### Roles & Responsibilities
+
+| Role | Address | Responsibility |
+|---|---|---|
+| **Client** | `escrow.client` | Posts job, pays, decrypts blob after approval |
+| **Main Agent** | `escrow.main_agent` | Does work, encrypts & uploads blob, creates allowlist |
+| **Auditor** | `escrow.auditor` | Reviews deliverable, calls `mark_as_audited()` |
+| **Custodian** | `@custodian_addr` | Handles disputes; no special Seal role |
+
+### Escrow Fields for Seal
+
+```move
+auditor: address,        // Agent responsible for audit review (set at creation)
+is_audited: bool,        // false at creation; true after auditor approves
+allowlist_id: Option<ID>, // ID of Walrus Seal Allowlist object (optional)
+```
+
+### Workflow: walrus_seal (Full Provenance)
+
+Use when you want an on-chain record linking blob to escrow.
+
+**1. Create Escrow (Client)**
+```
+create_agentic_escrow(..., auditor=<auditor_addr>, ...)
+→ is_audited=false, allowlist_id=none
+```
+
+**2. Create Allowlist (Main Agent)**
+```
+walrus_seal::create_allowlist_entry(name, table, escrow_id)
+→ Allowlist shared object created
+→ Cap transferred to main agent
+→ allowlist_id stored on escrow
+```
+
+**3. Encrypt & Upload Blob (Main Agent)**
+```
+key_id = allowlist_id_bytes ++ random_nonce
+upload to Walrus with Seal encryption → blob_id
+```
+
+**4. Register Blob (Main Agent)**
+```
+walrus_seal::publish(allowlist, cap, table, blob_id)
+→ blob_id attached to Allowlist
+```
+
+**5. Audit & Unlock (Auditor)**
+```
+agentwave_contract::mark_as_audited(escrow_id, table, clock)
+→ is_audited = true
+→ EscrowAudited event emitted
+```
+
+**6. Client Decrypts (Seal Service)**
+```
+seal::seal_approve(key_id, table, escrow_id, allowlist)
+→ Passes 3 checks → decryption key → blob decrypted
+```
+
+### Workflow: seal_policies (Lightweight)
+
+Use when you don't need on-chain blob registration.
+
+**1. Create Escrow (Client)**
+```
+create_agentic_escrow(..., auditor=<auditor_addr>, ...)
+```
+
+**2. Encrypt & Upload Blob (Main Agent)**
+```
+key_id = escrow_id_bytes ++ random_nonce
+upload to Walrus with Seal encryption → blob_id
+```
+
+**3. Register Blob Ref (Main Agent, Optional)**
+```
+agentwave_contract::add_blob_id(escrow_id, table, blob_id)
+```
+
+**4. Audit & Unlock (Auditor)**
+```
+agentwave_contract::mark_as_audited(escrow_id, table, clock)
+```
+
+**5. Client Decrypts (Seal Service)**
+```
+seal_policies::seal_approve(key_id, table, escrow_id)
+→ Passes 3 checks → decryption key → blob decrypted
+```
+
+### Key Security Properties
+
+| Property | Guarantee |
+|---|---|
+| **Only client decrypts** | `seal_approve` checks `sender == escrow.client` (live state) |
+| **Sealed until audited** | `is_audited` starts false; only auditor can set to true |
+| **Auditor cannot decrypt** | Auditor address never in allowlist; only client is whitelisted |
+| **One allowlist per escrow** | `check_allowlist_is_some` prevents duplicates |
+| **Namespace scoping** | Prefix check ensures key_id from one escrow ≠ another escrow |
 
 ### Current Auditor
 - **Address:** `0x18cf07c5518adf2d4f63c177a288d5adc08e25719c985032cd50c7074b4a8418`
